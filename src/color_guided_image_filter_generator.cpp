@@ -18,7 +18,7 @@ namespace {
         void generate() {
             assert(guidance.channels() == 3);
 
-            const int k_size = 31;
+            const int k_size = 20;
 
             input_bounded(x, y) = Halide::BoundaryConditions::repeat_edge(input)(x, y);
             guidance_bounded(x, y, c) = Halide::BoundaryConditions::repeat_edge(guidance)(x, y, c);
@@ -27,11 +27,8 @@ namespace {
 
             mean_guidance(x, y, c) = box_blur<float, float>(guidance_bounded, k_size)(x, y, c);
 
-//            mean_ii(x, y) = box_blur<int, int>(lambda(x, y, u16(input_bounded(x, y)) * input_bounded(x, y)), k_size, "mean_ii")(x, y);
-
             mean_ig(x, y, c) = box_blur<float, float>(lambda(x, y, c, f32(input_bounded(x, y)) * guidance_bounded(x, y, c)), k_size)(x, y, c);
 
-            //
             var_i(x, y) = Halide::Tuple(
                 box_blur<float, float>(lambda(x, y, f32(guidance_bounded(x, y, 0)) * guidance_bounded(x, y, 0)), k_size)(x, y) - f32(mean_guidance(x, y, 0)) * mean_guidance(x, y, 0) + epsilon,
                 box_blur<float, float>(lambda(x, y, f32(guidance_bounded(x, y, 0)) * guidance_bounded(x, y, 1)), k_size)(x, y) - f32(mean_guidance(x, y, 0)) * mean_guidance(x, y, 1),
@@ -40,7 +37,6 @@ namespace {
                 box_blur<float, float>(lambda(x, y, f32(guidance_bounded(x, y, 1)) * guidance_bounded(x, y, 2)), k_size)(x, y) - f32(mean_guidance(x, y, 1)) * mean_guidance(x, y, 2),
                 box_blur<float, float>(lambda(x, y, f32(guidance_bounded(x, y, 2)) * guidance_bounded(x, y, 2)), k_size)(x, y) - f32(mean_guidance(x, y, 2)) * mean_guidance(x, y, 2) + epsilon
             );
-
 
             inv_var_i(x, y) = sym_mat_inv_3x3(var_i)(x, y);
 
@@ -137,22 +133,30 @@ namespace {
         }
 
         template<class TResult=unsigned char, class TSum=signed short>
-        Func box_blur(const Halide::Func& in, const int k_size = 5) const {
+        Func box_blur(const Halide::Func& in, const int k_radius = 5) const {
             // TODO: implement O(1) filtering
             assert(k_size > 0 && k_size % 2 == 1);
-            Halide::RDom r(-(k_size / 2), k_size, -(k_size / 2), k_size);
+            const auto normalization = 2 * k_radius + 1;
+            Halide::RDom rx(-k_radius, normalization);
+            Halide::RDom ry(-k_radius, normalization);
 
+            Func blur_x(in.name() + "_blur_x");
             Func filtered(in.name() + "_box_blur");
+
+            const auto sum_cast = [&](const Expr& e, const std::string& sfx = ""){
+                return sum(Halide::cast<TSum>(e), filtered.name() + "_sum" + sfx) / normalization;
+            };
+
             if (in.dimensions() == 2) {
-                const Halide::Expr box_sum = sum(Halide::cast<TSum>(in(x + r.x, y + r.y)), filtered.name() + "_sum");
-                //filtered(x, y) = Halide::cast<TResult>(fast_integer_divide(box_sum, k_size * k_size));
-                filtered(x, y) = Halide::cast<TResult>(box_sum / (k_size * k_size));
+                blur_x(x, y) = sum_cast(in(x + rx.x, y), "_x");
+                filtered(x, y) = Halide::cast<TResult>(sum_cast(blur_x(x, y + ry.x)));
             } else if (in.dimensions() == 3) {
-                const Halide::Expr box_sum = sum(Halide::cast<TSum>(in(x + r.x, y + r.y, c)), filtered.name() + "_sum");
-                filtered(x, y, c) = Halide::cast<TResult>(box_sum / (k_size * k_size));
+                blur_x(x, y, c) = sum_cast(in(x + rx.x, y, c), "_x");
+                filtered(x, y, c) = Halide::cast<TResult>(sum_cast(blur_x(x, y + ry.x, c)));
             } else {
                  throw std::runtime_error("Wrong number of dimensions in box_blur");
             }
+            blur_x.compute_root(); //at(filtered, x);
             return filtered;
         }
 

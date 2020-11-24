@@ -41,6 +41,7 @@ add_halide_library(color_guided_image_filter
     FROM color_guided_image_filter_generator
     # GENERATOR_ARGS  # We don't have any yet
     FUNCTION_NAME color_guided_image_filter
+    FEATURES profile
     # HALIDE_TARGET ${HALIDE_TARGET}  # TODO: add option with custom HALIDE_TARGET
     # HALIDE_TARGET_FEATURES ${HALIDE_TARGET_FEATURES}  # TODO: add option with custom HALIDE_TARGET
     # EXTRA_OUTPUTS "stmt;html;schedule") # uncomment for extra output
