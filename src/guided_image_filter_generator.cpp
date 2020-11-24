@@ -8,14 +8,15 @@ using namespace Halide::ConciseCasts;
 namespace {
     class GuidedPipeline : public Halide::Generator<GuidedPipeline> {
     public:
-        Input<Halide::Buffer<uint8_t>> input{"input", 2};
-        Input<Halide::Buffer<uint8_t>> guidance{"guidance", 2};
+        Input<Halide::Buffer<uint8_t>> input{"input", 3};
+        Input<Halide::Buffer<uint8_t>> guidance{"guidance", 3};
         Input<int> rad{"radius"};
         Input<float> epsilon{"epsilon"};
-        Output<Halide::Buffer<uint8_t>> output{"output", 2};
+        Output<Halide::Buffer<uint8_t>> output{"output", 3};
 
         void generate() {
-            const int k_size = 5;
+            const int k_size = 25;
+
             input_bounded = Halide::BoundaryConditions::repeat_edge(input);
             guidance_bounded = Halide::BoundaryConditions::repeat_edge(guidance);
 
@@ -30,7 +31,7 @@ namespace {
             b(x, y) = mean_guidance(x, y) - a(x, y) * mean_input(x, y);
 
             mean_a(x, y) = box_blur<float, float>(a, k_size, "mean_a")(x, y);
-            mean_b(x, y) = box_blur<float, float>(b, k_size, "mean_a")(x, y);
+            mean_b(x, y) = box_blur<float, float>(b, k_size, "mean_b")(x, y);
 
             output(x, y) = u8_sat(mean_a(x, y) * input_bounded(x, y) + mean_b(x, y));
         }
@@ -58,7 +59,6 @@ namespace {
     private:
         template<class TResult=unsigned char, class TSum=signed short>
         Func box_blur(const Halide::Func& in, const int k_size = 5, const std::string& name = "box_blur") const {
-
             // TODO: implement O(1) filtering
             assert(k_size > 0 && k_size % 2 == 1);
             Halide::RDom r(-(k_size / 2), k_size, -(k_size / 2), k_size);
