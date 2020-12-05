@@ -34,11 +34,12 @@ namespace {
         Input<float> epsilon{"epsilon"};
         Output<Halide::Buffer<uint8_t>> output{"output", 2};
 
-        const bool FastGF = false;
+        const bool FastGF = true;
+
         void generate() {
             assert(guidance.channels() == 3);
 
-            const int k_size = 20;
+            const int k_size = 10;
 
             if (FastGF) {
                 downsample_2x(input_bounded, Halide::BoundaryConditions::repeat_edge(input));
@@ -60,7 +61,7 @@ namespace {
 
             var_i(x, y, c) = mean_cov_g(x, y, c) - cov_mg(x, y, c);
 
-            inv_var_i(x, y, c) = sym_mat_inv_3x3(var_i)(x, y, c);
+            inv_var_i(x, y, c) = sym_mat_inv_3x3(var_i, epsilon)(x, y, c);
 
             cov_ip(x, y, c) = f32(mean_ig(x, y, c)) - f32(mean_input(x, y)) * mean_guidance(x, y, c);
 
@@ -151,7 +152,7 @@ namespace {
             return result;
         }
 
-        Func sym_mat_inv_3x3(const Halide::Func& m) {
+        Func sym_mat_inv_3x3(const Halide::Func& m, Expr epsilon) {
             /* Derivation:
              * >>> from sympy import *
              * >>> a, b, c, d, e, f = symbols('a b c d e f')
@@ -160,15 +161,15 @@ namespace {
              * >>> print(m.inv())
              */
 
-            Expr ma = f32(m(x, y, 0));
+            Expr ma = f32(m(x, y, 0)) + epsilon;
             Expr mb = f32(m(x, y, 1));
             Expr mc = f32(m(x, y, 2));
-            Expr md = f32(m(x, y, 3));
+            Expr md = f32(m(x, y, 3)) + epsilon;
             Expr me = f32(m(x, y, 4));
-            Expr mf = f32(m(x, y, 5));
+            Expr mf = f32(m(x, y, 5)) + epsilon;
 
             Func det(m.name() + "_det");
-            det(x, y) = 0.001f + ma * md * mf - ma * me * me - mb * mb * mf + 2 * mb * mc * me - mc * mc * md;
+            det(x, y) = (ma * md * mf - ma * me * me - mb * mb * mf + 2 * mb * mc * me - mc * mc * md);
 
             Func result(m.name() + "_inv");
             result(x, y, c) = select(
@@ -219,10 +220,10 @@ namespace {
         void downsample_2x(Func& out, const Func& in) {
             Func downx(in.name() + "_downx");
             if (in.dimensions() == 2) {
-                downx(x, y) = (in(2 * x - 1, y) + 3.0f * (in(2 * x, y) + in(2 * x + 1, y)) + in(2 * x + 2, y)) / 8.0f;
+                downx(x, y) = f32(f32(in(2 * x - 1, y)) + 3.0f * (f32(in(2 * x, y)) + in(2 * x + 1, y)) + f32(in(2 * x + 2, y))) / 8.0f;
                 out(x, y) = (downx(x, 2 * y - 1) + 3.0f * (downx(x, 2 * y) + downx(x, 2 * y + 1)) + downx(x, 2 * y + 2)) / 8.0f;
             } else if (in.dimensions() == 3) {
-                downx(x, y, c) = (in(2 * x - 1, y, c) + 3.0f * (in(2 * x, y, c) + in(2 * x + 1, y, c)) + in(2 * x + 2, y, c)) / 8.0f;
+                downx(x, y, c) = f32(f32(in(2 * x - 1, y, c)) + 3.0f * (f32(in(2 * x, y, c)) + in(2 * x + 1, y, c)) + f32(in(2 * x + 2, y, c))) / 8.0f;
                 out(x, y, c) = (downx(x, 2 * y - 1, c) + 3.0f * (downx(x, 2 * y, c) + downx(x, 2 * y + 1, c)) + downx(x, 2 * y + 2, c)) / 8.0f;
             }
         }
