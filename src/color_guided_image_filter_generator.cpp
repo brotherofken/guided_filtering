@@ -77,8 +77,8 @@ namespace {
                 downsample_2x(p_bounded, Halide::BoundaryConditions::repeat_edge(input_p));
                 downsample_2x(i_bounded, Halide::BoundaryConditions::repeat_edge(guidance_i));
             } else {
-                p_bounded(x, y) = f32(Halide::BoundaryConditions::repeat_edge(input_p)(x, y));
-                i_bounded(x, y, c) = f32(Halide::BoundaryConditions::repeat_edge(guidance_i)(x, y, c));
+                p_bounded(x, y) = Halide::BoundaryConditions::repeat_edge(input_p)(x, y);
+                i_bounded(x, y, c) = Halide::BoundaryConditions::repeat_edge(guidance_i)(x, y, c);
             }
             // Algorithm 1 Guided Filter [1]
             // Step 1
@@ -100,6 +100,7 @@ namespace {
             // a
             sym_mat_inv_3x3(inv_var_i, var_i, epsilon);
             sym_mat_mul(a, inv_var_i, cov_ip);
+
             // b
             b(x, y) = f32(mean_p(x, y)) - a(x, y, 0) * mean_i(x, y, Expr(0)) - a(x, y, 1) * mean_i(x, y, 1) - a(x, y, 2) * mean_i(x, y, 2);
 
@@ -262,12 +263,15 @@ namespace {
         // Downsample with a 1 3 3 1 filter
         void downsample_2x(SeparableFunc& dest, const Func& in) {
             Func& downx = dest.result_x;
+            const auto sum_1331 = [](const Expr& v0, const Expr& v1, const Expr& v2, const Expr& v3) {
+                return (f32(v0) + 3.f * (f32(v1) + v2) + v3) / 8.f;
+            };
             if (in.dimensions() == 2) {
-                downx(x, y) = f32(f32(in(2 * x - 1, y)) + 3.0f * (f32(in(2 * x, y)) + in(2 * x + 1, y)) + f32(in(2 * x + 2, y))) / 8.0f;
-                dest(x, y) = (downx(x, 2 * y - 1) + 3.0f * (downx(x, 2 * y) + downx(x, 2 * y + 1)) + downx(x, 2 * y + 2)) / 8.0f;
+                downx(x, y) = sum_1331(in(2 * x - 1, y), in(2 * x, y), in(2 * x + 1, y), in(2 * x + 2, y));
+                dest(x, y) = sum_1331(downx(x, 2 * y - 1), downx(x, 2 * y), downx(x, 2 * y + 1), downx(x, 2 * y + 2));
             } else if (in.dimensions() == 3) {
-                downx(x, y, c) = f32(f32(in(2 * x - 1, y, c)) + 3.0f * (f32(in(2 * x, y, c)) + in(2 * x + 1, y, c)) + f32(in(2 * x + 2, y, c))) / 8.0f;
-                dest(x, y, c) = (downx(x, 2 * y - 1, c) + 3.0f * (downx(x, 2 * y, c) + downx(x, 2 * y + 1, c)) + downx(x, 2 * y + 2, c)) / 8.0f;
+                downx(x, y, c) = sum_1331(in(2 * x - 1, y, c), in(2 * x, y, c), in(2 * x + 1, y, c), in(2 * x + 2, y, c));
+                dest(x, y, c) = sum_1331(downx(x, 2 * y - 1, c), downx(x, 2 * y, c), downx(x, 2 * y + 1, c), downx(x, 2 * y + 2, c));
             }
         }
 
