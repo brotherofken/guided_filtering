@@ -25,14 +25,18 @@ namespace {
 
         [[nodiscard]] const std::string& name() const { return result.name(); }
 
+        Func& compute_root(const Var& x, const Var& y, const int tile_w, const int tile_h, const int vector_width) {
+            result_x.compute_at(result, yi).store_at(result, yo).vectorize(x, vector_width);;
+            return result.compute_root().tile(x, y, xo, yo, xi, yi, tile_w, tile_h).vectorize(xi, vector_width);
+        }
+
         Func result_x;
         Func result;
-
-        Func& compute_root(const Var& x, const Var& y, const int tile_w, const int tile_h, const int vector_width) {
-            Var xo("xo"), yo("yo"), xi("xi"), yi("yi"), tile("tile");
-            result_x.compute_at(result, tile).store_at(result, tile).vectorize(x, vector_width);;
-            return result.compute_root().tile(x, y, xo, yo, xi, yi, tile_w, tile_h).fuse(xo, yo, tile).vectorize(xi, vector_width);
-        }
+        Var tile = Var("tile");
+        Var xo = Var("xo");
+        Var yo = Var("yo");
+        Var xi = Var("xi");
+        Var yi = Var("yi");
     };
 
     class ColorGuidedPipeline : public Halide::Generator<ColorGuidedPipeline> {
@@ -137,17 +141,18 @@ namespace {
                 mean_p.compute_root(x, y, tile_w, tile_h, vector_width);
                 mean_i.compute_root(x, y, tile_w, tile_h, vector_width);
                 corr_ip.compute_root(x, y, tile_w, tile_h, vector_width);
-                mean_ii.compute_root();
                 corr_i.compute_root(x, y, tile_w, tile_h, vector_width);
-                cov_ip.compute_root();
-                var_i.compute_root();
-                inv_var_i.compute_root();
 
-                a.compute_root().tile(x, y, xo, yo, xi, yi, tile_w, tile_h);
-                b.compute_root().tile(x, y, xo, yo, xi, yi, tile_w, tile_h);
-                //store_at(output, tile).compute_at(output, tile).
+                var_i.compute_at(a, xi).vectorize(x, vector_width);
+                inv_var_i.compute_at(a, xi).vectorize(x, vector_width);
+                cov_ip.compute_at(a, xi).vectorize(x, vector_width);
+                a.compute_root().tile(x, y, xo, yo, xi, yi, tile_w, tile_h).vectorize(xi, vector_width);
+
+                b.store_at(mean_b, mean_b.yo).compute_at(mean_b, mean_b.yi).vectorize(x, vector_width);
+
                 mean_a.compute_root(x, y, tile_w, tile_h, vector_width);
                 mean_b.compute_root(x, y, tile_w, tile_h, vector_width);
+
                 if (FastGF) {
                     umean_a.compute_root(x, y, tile_w, tile_h, vector_width);
                     umean_b.compute_root(x, y, tile_w, tile_h, vector_width);
@@ -158,7 +163,7 @@ namespace {
                 if (make_dumps) {
                     const auto functions_to_dump = {&channel_corr_i, &corr_i.result, &channel_corr_mean_i,
                                                     &p_bounded.result, &i_bounded.result, &mean_p.result,
-                                                    &mean_i.result, &corr_ip.result, &mean_ii, &cov_ip, &var_i,
+                                                    &mean_i.result, &corr_ip.result, &cov_ip, &var_i,
                                                     &inv_var_i, &a, &b, &mean_a.result, &mean_b.result};
                     for (Func *func : functions_to_dump) {
                         const std::string dumpFileName = "func_dumps/" + func->name();
@@ -285,7 +290,6 @@ namespace {
         SeparableFunc mean_p = SeparableFunc{"mean_p"};
         SeparableFunc mean_i = SeparableFunc{"mean_i"};
         SeparableFunc corr_ip = SeparableFunc{"corr_ip"};
-        Func mean_ii = Func{"mean_ii"};
         Func channel_corr_i = Func{"channel_corr_i"};
         SeparableFunc corr_i = SeparableFunc{"corr_i"};
         Func channel_corr_mean_i = Func{"channel_corr_mean_i"};
