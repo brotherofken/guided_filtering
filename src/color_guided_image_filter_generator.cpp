@@ -8,6 +8,33 @@ using namespace Halide::ConciseCasts;
 
 namespace {
 
+    struct SeparableFunc {
+        explicit SeparableFunc(const std::string& name)
+            : result_x(name + "_x")
+            , result(name)
+        {}
+
+        template<typename... Args>
+        typename std::enable_if<Halide::Internal::all_are_convertible<Expr, Args...>::value, FuncRef>::type
+        operator()(Args &&... args) const {
+            std::vector<Expr> collected_args{std::forward<Args>(args)...};
+            return result(collected_args);
+        }
+
+        operator const Func&() const { return result; }
+
+        [[nodiscard]] const std::string& name() const { return result.name(); }
+
+        Func result_x;
+        Func result;
+
+        Func& compute_root(const Var& x, const Var& y, const int tile_w, const int tile_h, const int vector_width) {
+            Var xo("xo"), yo("yo"), xi("xi"), yi("yi"), tile("tile");
+            result_x.compute_at(result, tile).store_at(result, tile).vectorize(x, vector_width);;
+            return result.compute_root().tile(x, y, xo, yo, xi, yi, tile_w, tile_h).fuse(xo, yo, tile).vectorize(xi, vector_width);
+        }
+    };
+
     class ColorGuidedPipeline : public Halide::Generator<ColorGuidedPipeline> {
 
         Func& calc_channel_corr(Func& dest, const Func& f1, const Func& f2, const int channels) {
@@ -70,7 +97,7 @@ namespace {
             sym_mat_inv_3x3(inv_var_i, var_i, epsilon);
             sym_mat_mul(a, inv_var_i, cov_ip);
             // b
-            b(x, y) = f32(mean_p(x, y)) - a(x, y, 0) * mean_i(x, y, 0) - a(x, y, 1) * mean_i(x, y, 1) - a(x, y, 2) * mean_i(x, y, 2);
+            b(x, y) = f32(mean_p(x, y)) - a(x, y, 0) * mean_i(x, y, Expr(0)) - a(x, y, 1) * mean_i(x, y, 1) - a(x, y, 2) * mean_i(x, y, 2);
 
             // Step 4
             box_blur<float, float>(mean_a, a, k_size);
@@ -98,17 +125,20 @@ namespace {
 
             } else {
                 const auto tile_w = 64; // manually tuned on i7-7600U
-                const auto tile_h = 16;
+                const auto tile_h = 64;
+                const auto vector_width = 32;
                 Var xo("xo"), yo("yo"), xi("xi"), yi("yi"), tile("tile");
 
-                p_bounded.compute_root();
-                i_bounded.compute_root();
+                if (FastGF) {
+                    p_bounded.compute_root(x, y, tile_w, tile_h, vector_width);
+                    i_bounded.compute_root(x, y, tile_w, tile_h, vector_width);
+                }
 
-                mean_p.compute_root();
-                mean_i.compute_root().bound(c, 0, 3);
-                corr_ip.compute_root();
+                mean_p.compute_root(x, y, tile_w, tile_h, vector_width);
+                mean_i.compute_root(x, y, tile_w, tile_h, vector_width);
+                corr_ip.compute_root(x, y, tile_w, tile_h, vector_width);
                 mean_ii.compute_root();
-                corr_i.compute_root();
+                corr_i.compute_root(x, y, tile_w, tile_h, vector_width);
                 cov_ip.compute_root();
                 var_i.compute_root();
                 inv_var_i.compute_root();
@@ -116,19 +146,20 @@ namespace {
                 a.compute_root().tile(x, y, xo, yo, xi, yi, tile_w, tile_h);
                 b.compute_root().tile(x, y, xo, yo, xi, yi, tile_w, tile_h);
                 //store_at(output, tile).compute_at(output, tile).
-                mean_a.compute_root().vectorize(x, tile_w);
-                mean_b.compute_root().vectorize(x, tile_w);
+                mean_a.compute_root(x, y, tile_w, tile_h, vector_width);
+                mean_b.compute_root(x, y, tile_w, tile_h, vector_width);
                 if (FastGF) {
-                    umean_a.compute_root().vectorize(x, tile_w);
-                    umean_b.compute_root().vectorize(x, tile_w);
+                    umean_a.compute_root(x, y, tile_w, tile_h, vector_width);
+                    umean_b.compute_root(x, y, tile_w, tile_h, vector_width);
                 }
-                output.tile(x, y, xo, yo, xi, yi, tile_w, tile_h).fuse(xo, yo, tile).vectorize(xi, tile_w).unroll(yi);
+                output.tile(x, y, xo, yo, xi, yi, tile_w, tile_h).fuse(xo, yo, tile).vectorize(xi, vector_width); //.unroll(yi);
 
                 const bool make_dumps = false;
                 if (make_dumps) {
-                    const auto functions_to_dump = {&channel_corr_i, &corr_i, &channel_corr_mean_i, &p_bounded, &i_bounded,
-                                                    &mean_p, &mean_i, &corr_ip, &mean_ii, &cov_ip, &var_i,
-                                                    &inv_var_i, &a, &b, &mean_a, &mean_b};
+                    const auto functions_to_dump = {&channel_corr_i, &corr_i.result, &channel_corr_mean_i,
+                                                    &p_bounded.result, &i_bounded.result, &mean_p.result,
+                                                    &mean_i.result, &corr_ip.result, &mean_ii, &cov_ip, &var_i,
+                                                    &inv_var_i, &a, &b, &mean_a.result, &mean_b.result};
                     for (Func *func : functions_to_dump) {
                         const std::string dumpFileName = "func_dumps/" + func->name();
                         if (func->outputs() > 1) {
@@ -193,14 +224,14 @@ namespace {
         }
 
         template<class TResult=unsigned char, class TSum=signed short>
-        void box_blur(Halide::Func& dest, const Halide::Func& in, const int k_radius = 5) const {
+        void box_blur(SeparableFunc& dest, const Halide::Func& in, const int k_radius = 5) const {
             // TODO: implement O(1) filtering
             assert(k_size > 0 && k_size % 2 == 1);
             const auto normalization = 2 * k_radius + 1;
             Halide::RDom rx(-k_radius, normalization);
             Halide::RDom ry(-k_radius, normalization);
 
-            Func blur_x(in.name() + "_blur_x");
+            Func& blur_x = dest.result_x;
 
             const auto sum_cast = [&](const Expr& e, const std::string& sfx = "") {
                 if constexpr (std::is_integral_v<TSum>) {
@@ -224,8 +255,8 @@ namespace {
 
 
         // Downsample with a 1 3 3 1 filter
-        void downsample_2x(Func& dest, const Func& in) {
-            Func downx(in.name() + "_downx");
+        void downsample_2x(SeparableFunc& dest, const Func& in) {
+            Func& downx = dest.result_x;
             if (in.dimensions() == 2) {
                 downx(x, y) = f32(f32(in(2 * x - 1, y)) + 3.0f * (f32(in(2 * x, y)) + in(2 * x + 1, y)) + f32(in(2 * x + 2, y))) / 8.0f;
                 dest(x, y) = (downx(x, 2 * y - 1) + 3.0f * (downx(x, 2 * y) + downx(x, 2 * y + 1)) + downx(x, 2 * y + 2)) / 8.0f;
@@ -236,9 +267,8 @@ namespace {
         }
 
         // Upsample using bilinear interpolation
-        void upsample_2x(Func& dest, const Func& f) {
-            using Halide::_;
-            Func upx(f.name() + "_upx");
+        void upsample_2x(SeparableFunc& dest, const Func& f) {
+            Func& upx = dest.result_x;
             if (f.dimensions() == 2) {
                 upx(x, y) = 0.25f * f((x / 2) - 1 + 2 * (x % 2), y) + 0.75f * f(x / 2, y);
                 dest(x, y) = 0.25f * upx(x, (y / 2) - 1 + 2 * (y % 2)) + 0.75f * upx(x, y / 2);
@@ -249,14 +279,15 @@ namespace {
         }
 
     private:
-        Func p_bounded = Func{"p_bounded"};
-        Func i_bounded = Func{"i_bounded"};
-        Func mean_p = Func{"mean_p"};
-        Func mean_i = Func{"mean_i"};
-        Func corr_ip = Func{"corr_ip"};
+        SeparableFunc p_bounded = SeparableFunc{"p_bounded"};
+        SeparableFunc i_bounded = SeparableFunc{"i_bounded"};
+
+        SeparableFunc mean_p = SeparableFunc{"mean_p"};
+        SeparableFunc mean_i = SeparableFunc{"mean_i"};
+        SeparableFunc corr_ip = SeparableFunc{"corr_ip"};
         Func mean_ii = Func{"mean_ii"};
         Func channel_corr_i = Func{"channel_corr_i"};
-        Func corr_i = Func{"corr_i"};
+        SeparableFunc corr_i = SeparableFunc{"corr_i"};
         Func channel_corr_mean_i = Func{"channel_corr_mean_i"};
 
         Func cov_ip = Func{"cov_ip"};
@@ -264,10 +295,10 @@ namespace {
         Func inv_var_i = Func{"inv_var_i"};
         Func a = Func{"a"};
         Func b = Func{"b"};
-        Func mean_a = Func{"mean_a"};
-        Func mean_b = Func{"mean_b"};
-        Func umean_a = Func{"umean_a"};;
-        Func umean_b = Func{"umean_b"};;
+        SeparableFunc mean_a = SeparableFunc{"mean_a"};
+        SeparableFunc mean_b = SeparableFunc{"mean_b"};
+        SeparableFunc umean_a = SeparableFunc{"umean_a"};;
+        SeparableFunc umean_b = SeparableFunc{"umean_b"};;
         Var x = {"x"};
         Var y = {"y"};
         Var c = {"c"};
