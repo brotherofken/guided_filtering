@@ -35,6 +35,8 @@ add_halide_library(guided_image_filter
     # EXTRA_OUTPUTS "stmt;html;schedule") # uncomment for extra output
 )
 
+
+
 add_executable(color_guided_image_filter_generator src/color_guided_image_filter_generator.cpp)
 target_link_libraries(color_guided_image_filter_generator PRIVATE Halide::Generator)
 add_halide_library(color_guided_image_filter
@@ -45,7 +47,17 @@ add_halide_library(color_guided_image_filter
     # HALIDE_TARGET ${HALIDE_TARGET}  # TODO: add option with custom HALIDE_TARGET
     # HALIDE_TARGET_FEATURES ${HALIDE_TARGET_FEATURES}  # TODO: add option with custom HALIDE_TARGET
     # EXTRA_OUTPUTS "stmt;html;schedule") # uncomment for extra output
+    # AUTOSCHEDULER Halide::Adams2019
+    # PARAMS auto_schedule=true
 )
+set(GENERATED_SCHEDULE_PATH ${PROJECT_SOURCE_DIR}/src/color_guided_image_filter.schedule.h)
+if (EXISTS ${GENERATED_SCHEDULE_PATH})
+    message(STATUS "Schedule found in ${GENERATED_SCHEDULE_PATH}")
+    target_compile_definitions(color_guided_image_filter_generator PRIVATE USE_COLOR_GUIDED_FILTER_AUTOSCHEDULE)
+else()
+    message(STATUS "No schedule found in ${GENERATED_SCHEDULE_PATH}")
+endif ()
+
 
 add_executable(smoothing bin/smoothing.cpp ${src_files})
 add_dependencies(smoothing color_guided_image_filter)

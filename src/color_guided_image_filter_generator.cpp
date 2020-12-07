@@ -6,6 +6,18 @@
 using namespace Halide;
 using namespace Halide::ConciseCasts;
 
+#ifdef USE_COLOR_GUIDED_FILTER_AUTOSCHEDULE
+#include "color_guided_image_filter.schedule.h"
+namespace {
+    const bool auto_schedule_available = true;
+}
+#else
+namespace {
+    const bool auto_schedule_available = false;
+    inline void apply_schedule_color_guided_image_filter(Halide::Pipeline pipeline, Halide::Target target) {}
+}
+#endif
+
 namespace {
 
     struct SeparableFunc {
@@ -127,7 +139,14 @@ namespace {
 
         void schedule() {
             if (auto_schedule) {
-
+                input_p.set_estimates({{0, 2048}, {0, 1024}});
+                guidance_i.set_estimates({{0, 2048}, {0, 1024}, {0, 3}});
+                rad.set_estimate(30);
+                epsilon.set_estimate(0.01f);
+                output.set_estimates({{0, 2048}, {0, 1024}});
+            } else if (auto_schedule_available) {
+                std::cerr << "Use automatically generated schedule." << std::endl;
+                apply_schedule_color_guided_image_filter(get_pipeline(), get_target());
             } else {
                 const auto tile_w = 64; // manually tuned on i7-7600U
                 const auto tile_h = 64;
