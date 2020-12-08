@@ -42,7 +42,7 @@ int main(int argc, char* argv[]) {
     std::cout << "output.dimensions(): " << output.dimensions() << std::endl;
 
     const float eps = 0.05f * 255;
-    color_guided_image_filter(input_img, guidance_img, 5, eps * eps, output);
+    color_guided_image_filter(input_img, guidance_img, 5, int(eps * eps + 0.5f), output);
 
     if (!save_png(output_img_path, output)) {
         return EXIT_FAILURE;
